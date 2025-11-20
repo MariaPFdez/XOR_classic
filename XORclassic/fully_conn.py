@@ -66,8 +66,14 @@ def training_fully(train_dataloader, test_dataloader):
             
             while (inp != pred_ae).sum().item() > 0 and count < max_corrections:
             
-                # calculate xor error with sign
-                xor_sign = (inp - pred_ae)
+                # # calculate xor error with sign
+                # xor_sign = (inp - pred_ae)
+
+                # Logical error + direction
+                e = (inp != pred_ae)  
+                m_up = e & inp.bool() # push-up mask
+                m_dn = e & (~inp.bool()) # push-down mask
+                xor_sign = m_up.float() - m_dn.float() # logical equivalent of (x - y)
                 
                 # update decoder weights
                 V += (eta_dec*(hid.transpose(0,1) @ xor_sign))

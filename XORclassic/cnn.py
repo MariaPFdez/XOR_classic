@@ -32,13 +32,13 @@ def forward(inp, W, b_W, V, b_V, C, b_C):
     hid_cl, idx = mp(hid)
     up = torch.nn.MaxUnpool2d(4)
     hid = up(hid_cl, idx)
-    pred_ae = ((torch.nn.functional.conv2d(hid, V, bias = None, padding = padding) + b_V) >= 0.0).float()
+    pred_cnn = ((torch.nn.functional.conv2d(hid, V, bias = None, padding = padding) + b_V) >= 0.0).float()
     
     # to classify
     fl_hid = torch.flatten(hid_cl, start_dim = 1)
     pred_cl = fl_hid @ C.to(hid.device) + b_C.to(hid.device)
     
-    return hid, hid_cl, pred_ae, pred_cl
+    return hid, hid_cl, pred_cnn, pred_cl
 
 
 
@@ -95,13 +95,19 @@ def training_cnn(train_dataloader, test_dataloader):
         for inp, _ in train_dataloader:
     
             inp = inp.view(-1, 1, 28, 28).to(device)
-            hid, _, pred_ae, _ = forward(inp, W, b_W, V, b_V, C, b_C)  
+            hid, _, pred_cnn, _ = forward(inp, W, b_W, V, b_V, C, b_C)  
             count = 0
             
-            while (inp != pred_ae).sum().item() > 0 and count < max_corrections:
+            while (inp != pred_cnn).sum().item() > 0 and count < max_corrections:
             
-                # calculate xor error with sign
-                xor_sign = (inp - pred_ae)
+                # # calculate xor error with sign
+                # xor_sign = (inp - pred_cnn)
+                
+                # Logical error + direction
+                e = (inp != pred_cnn)  
+                m_up = e & inp.bool() # push-up mask
+                m_dn = e & (~inp.bool()) # push-down mask
+                xor_sign = m_up.float() - m_dn.float() # logical equivalent of (x - y)
                 
                 # update decoder weights
                 V += (eta_dec*decoder_update(hid, xor_sign, kernel, padding, hidden_channels))
@@ -113,9 +119,9 @@ def training_cnn(train_dataloader, test_dataloader):
                 b_W += eta_b_enc*enc_sign.mean(dim = (0,2,3), keepdim = True)
                 
                 # get the prediction again
-                hid, _, pred_ae, _ = forward(inp, W, b_W, V, b_V, C, b_C)
+                hid, _, pred_cnn, _ = forward(inp, W, b_W, V, b_V, C, b_C)
                 count += 1
-            num += (inp == pred_ae).sum().item()
+            num += (inp == pred_cnn).sum().item()
             den += inp.numel()
         
         print('Epoch', epoch+1)

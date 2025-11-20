@@ -41,39 +41,68 @@ def model_accuracy(test_data, train_data, network, classif = False):
 
     # variables initialization
     correct_cl_test, correct_rec_test, total_cl_test, total_rec_test = 0, 0, 0, 0
+    TP = TN = FP = FN = 0
     
     # calculate test accuracy
     if network == 'CNN':
         for inp_test, targ_test in test_dataloader:
+            # make the prediction
             inp_test = inp_test.view(-1, 1, 28, 28).to(device)
             targ_test = targ_test.to(device)
             _, _, pred_rec_test, log_test = XORclassic.cnn.forward(inp_test, W, b_W, V, b_V, C, b_C)  
             pred_cl_test = torch.argmax(log_test, dim = 1)
+
+            # info to compute bit accuracy
             correct_cl_test += (targ_test == pred_cl_test).sum().item()
             total_cl_test += targ_test.size(0)
             correct_rec_test += (inp_test == pred_rec_test).sum().item()
             total_rec_test += inp_test.numel()    
+
+            # info to compute balance accuracy
+            TP += ((inp_test == 1) & (pred_rec_test == 1)).sum().item()
+            TN += ((inp_test == 0) & (pred_rec_test == 0)).sum().item()
+            FP += ((inp_test == 0) & (pred_rec_test == 1)).sum().item()
+            FN += ((inp_test == 1) & (pred_rec_test == 0)).sum().item()           
     
     elif network == 'Fully':
         for inp_test, targ_test in test_dataloader:
+            # make the prediction
             inp_test = inp_test.view(inp_test.size(0), -1).to(device)
             targ_test = targ_test.to(device)
             _, pred_rec_test, log_test = XORclassic.fully_conn.forward(inp_test, W, b_W, V, b_V, C, b_C)
             pred_cl_test = torch.argmax(log_test, dim = 1)
+            
+            # info to compute bit accuracy
             correct_cl_test += (targ_test == pred_cl_test).sum().item()
             total_cl_test += targ_test.size(0)
             correct_rec_test += (inp_test == pred_rec_test).sum().item()
             total_rec_test += inp_test.numel()    
 
+            # info to compute balance accuracy
+            TP += ((inp_test == 1) & (pred_rec_test == 1)).sum().item()
+            TN += ((inp_test == 0) & (pred_rec_test == 0)).sum().item()
+            FP += ((inp_test == 0) & (pred_rec_test == 1)).sum().item()
+            FN += ((inp_test == 1) & (pred_rec_test == 0)).sum().item()   
+
     else:
         raise TypeError('Error with network: You must choose an option between CNN and Fully')
 
-    if classif:
-        print('Accuracy of test dataset when reconstructing:', correct_rec_test/total_rec_test*100, '% \n')
-        print('Accuracy of test dataset when classifying:', correct_cl_test/total_cl_test*100, '% \n')
-    else:
-        print('Accuracy of test dataset when reconstructing:', correct_rec_test/total_rec_test*100, '% \n')
+    bit_acc = (TP + TN) / max(1, total_rec_test)
+    pos_prec = TP / max(1, (TP + FP))
+    pos_rec  = TP / max(1, (TP + FN))
+    f1_pos   = (2 * pos_prec * pos_rec) / max(1e-9, (pos_prec + pos_rec))
+    acc_pos  = TP / max(1, (TP + FN))        # accuracy on positive pixels
+    acc_neg  = TN / max(1, (TN + FP))        # accuracy on negative pixels
+    balanced_acc = 0.5 * (acc_pos + acc_neg)
 
+    print('Bit accuracy of test dataset when reconstructing:', correct_rec_test/total_rec_test*100, '%')
+    print('Balanced accuracy of test dataset when reconstructing:', balanced_acc*100, '%')
+    print('F1 score of test dataset when reconstructing:', f1_pos)
+
+    if classif:
+        print('Accuracy of test dataset when classifying:', correct_cl_test/total_cl_test*100, '%')
+    else:
+        pass
 
 
 def plot_tsne(train_data, network, test_data = None, save_fig = True):
@@ -293,10 +322,11 @@ def plot_classifications(train_data, network, test_data = None, save_fig = True)
     
     for i in range(classes):
         conteo = Counter(preds[i])
+        axs[i].axis(xmin = -1, xmax = 10)
         axs[i].bar(list(conteo.keys()), list(conteo.values()))
-        axs[i].set_title(f'Clase {i}')
-        axs[i].set_xlabel('Predicción')
-        axs[i].set_ylabel('Frecuencia')
+        axs[i].set_title(f'Class {i}')
+        axs[i].set_xlabel('Prediction')
+        axs[i].set_ylabel('Frequence')
     
     plt.tight_layout()
 
