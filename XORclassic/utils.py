@@ -2,6 +2,10 @@ from torchvision import datasets, transforms
 import torch
 import os
 
+# Detect GPU
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using device:", device)
+
 batch_size = 256
 
 # to binarize datasets
@@ -161,12 +165,12 @@ def load_variables(train_data, network, classif_data = None):
     loaded_vars = {}
     
     for name in variables:
-        tensor = torch.load(os.path.join(load_path, f'{name}.pt'))
+        tensor = torch.load(os.path.join(load_path, f'{name}.pt'), map_location = device)
         loaded_vars[name] = tensor
 
     if classif_data: 
         for name in ['C', 'b_C']:
-            tensor = torch.load(os.path.join(load_path_class, f'{name}.pt'))
+            tensor = torch.load(os.path.join(load_path_class, f'{name}.pt'), map_location = device)
             loaded_vars[name] = tensor
         return loaded_vars['B'], loaded_vars['W'], loaded_vars['V'], loaded_vars['b_W'], loaded_vars['b_V'], loaded_vars['C'], loaded_vars['b_C']
     else:
