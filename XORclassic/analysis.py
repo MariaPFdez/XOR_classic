@@ -6,6 +6,8 @@ from XORclassic.utils import load_variables, get_datasets
 from sklearn.manifold import TSNE
 from collections import Counter
 import os
+import numpy as np
+import lpips
 
 # Detect GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -16,6 +18,8 @@ hidden_channels_cnn = 28
 hidden_channels_fully = 1024
 
 def model_accuracy(test_data, train_data, network, classif = False):
+
+    loss_fn = lpips.LPIPS(net='vgg')
 
     # dataset loaded
     _, test_dataloader = get_datasets(train_data, test_data)
@@ -42,6 +46,7 @@ def model_accuracy(test_data, train_data, network, classif = False):
     # variables initialization
     correct_cl_test, correct_rec_test, total_cl_test, total_rec_test = 0, 0, 0, 0
     TP = TN = FP = FN = 0
+    lpips_result = []
     
     # calculate test accuracy
     if network == 'CNN':
@@ -62,7 +67,12 @@ def model_accuracy(test_data, train_data, network, classif = False):
             TP += ((inp_test == 1) & (pred_rec_test == 1)).sum().item()
             TN += ((inp_test == 0) & (pred_rec_test == 0)).sum().item()
             FP += ((inp_test == 0) & (pred_rec_test == 1)).sum().item()
-            FN += ((inp_test == 1) & (pred_rec_test == 0)).sum().item()           
+            FN += ((inp_test == 1) & (pred_rec_test == 0)).sum().item()    
+            
+            # info to compute LPIPS   
+            inp_test_tr = torch.tensor(np.stack((inp_test,)*3, axis=1).reshape(inp_test.shape[0],3,28,28))
+            pred_rec_test_tr = torch.tensor(np.stack((pred_rec_test,)*3, axis=1).reshape(inp_test.shape[0],3,28,28))
+            lpips_result.append(loss_fn.forward(inp_test_tr, pred_rec_test_tr)[0][0][0].item())
     
     elif network == 'Fully':
         for inp_test, targ_test in test_dataloader:
@@ -84,6 +94,11 @@ def model_accuracy(test_data, train_data, network, classif = False):
             FP += ((inp_test == 0) & (pred_rec_test == 1)).sum().item()
             FN += ((inp_test == 1) & (pred_rec_test == 0)).sum().item()   
 
+            # info to compute LPIPS   
+            inp_test_tr = torch.tensor(np.stack((inp_test,)*3, axis=1).reshape(inp_test.shape[0],3,28,28))
+            pred_rec_test_tr = torch.tensor(np.stack((pred_rec_test,)*3, axis=1).reshape(inp_test.shape[0],3,28,28))
+            lpips_result.append(loss_fn.forward(inp_test_tr, pred_rec_test_tr)[0][0][0].item())
+
     else:
         raise TypeError('Error with network: You must choose an option between CNN and Fully')
 
@@ -94,10 +109,12 @@ def model_accuracy(test_data, train_data, network, classif = False):
     acc_pos  = TP / max(1, (TP + FN))        # accuracy on positive pixels
     acc_neg  = TN / max(1, (TN + FP))        # accuracy on negative pixels
     balanced_acc = 0.5 * (acc_pos + acc_neg)
+    lpips_mean = np.mean(lpips_result)
 
     print('Bit accuracy of test dataset when reconstructing:', correct_rec_test/total_rec_test*100, '%')
     print('Balanced accuracy of test dataset when reconstructing:', balanced_acc*100, '%')
     print('F1 score of test dataset when reconstructing:', f1_pos)
+    print('Mean LPIPS score of test dataset when reconstructing:', lpips_mean)
 
     if classif:
         print('Accuracy of test dataset when classifying:', correct_cl_test/total_cl_test*100, '%')
@@ -158,10 +175,10 @@ def plot_tsne(train_data, network, test_data = None, save_fig = True):
     
     plt.figure(figsize=(8,8))
     scatter = plt.scatter(hid_2d[:,0], hid_2d[:,1], c=labels_all, cmap='tab10', s=10)
-    plt.legend(*scatter.legend_elements(), title="Digits")
-    plt.title("Latent space t-SNE")
-    plt.xlabel("t-SNE 1")
-    plt.ylabel("t-SNE 2")
+    plt.legend(*scatter.legend_elements(), title="Digits", fontsize = 12)
+    plt.title("Latent space t-SNE", fontsize = 18)
+    plt.xlabel("t-SNE first dimension", fontsize = 16)
+    plt.ylabel("t-SNE second dimension", fontsize = 16)
     
     if save_fig:
         save_path = 'analysis_results_XORclassic/tSNE'
@@ -169,7 +186,7 @@ def plot_tsne(train_data, network, test_data = None, save_fig = True):
             pass
         else:
             os.makedirs(save_path)
-        plt.savefig(os.path.join(save_path, f'{network}_trained_with_{train_data}_tested_with_{test_data}.png'))
+        plt.savefig(os.path.join(save_path, f'{network}_trained_with_{train_data}_tested_with_{test_data}.pdf'))
 
     plt.show()
 
@@ -226,21 +243,21 @@ def plot_reconstructions(train_data, network, test_data = None, save_fig = True)
             plt.imshow(orig, cmap="gray")
             plt.axis("off")
             if examples_shown == 0:
-                plt.title("Original")
+                plt.title("Original", fontsize = 16)
     
             # show reconstructed
             plt.subplot(2, num_examples, num_examples + examples_shown + 1)
             plt.imshow(recon, cmap="gray")
             plt.axis("off")
             if examples_shown == 0:
-                plt.title("Reconstructed")
+                plt.title("Reconstructed", fontsize = 16)
     
             examples_shown += 1
     
         if examples_shown >= num_examples:
             break
 
-    plt.suptitle(f"Reconstruction of {test_data} by {network} trained with {train_data}", fontsize=12)
+    plt.suptitle(f"Reconstruction of {test_data} by {network} trained with {train_data}", fontsize=18)
 
     if save_fig:
         save_path = 'analysis_results_XORclassic/Reconstructions'
@@ -248,7 +265,7 @@ def plot_reconstructions(train_data, network, test_data = None, save_fig = True)
             pass
         else:
             os.makedirs(save_path)
-        plt.savefig(os.path.join(save_path, f'{network}_trained_with_{train_data}_tested_with_{test_data}.png'))
+        plt.savefig(os.path.join(save_path, f'{network}_trained_with_{train_data}_tested_with_{test_data}.pdf'))
 
     plt.show()
 
@@ -322,11 +339,11 @@ def plot_classifications(train_data, network, test_data = None, save_fig = True)
     
     for i in range(classes):
         conteo = Counter(preds[i])
-        axs[i].axis(xmin = -1, xmax = 10)
+        axs[i].axis(xmin = -1, xmax = 10, ymax = 1200)
         axs[i].bar(list(conteo.keys()), list(conteo.values()))
-        axs[i].set_title(f'Class {i}')
-        axs[i].set_xlabel('Prediction')
-        axs[i].set_ylabel('Frequence')
+        axs[i].set_title(f'Class {i}', fontsize = 18)
+        axs[i].set_xlabel('Prediction', fontsize = 14)
+        axs[i].set_ylabel('Frequency', fontsize = 14)
     
     plt.tight_layout()
 
@@ -336,6 +353,6 @@ def plot_classifications(train_data, network, test_data = None, save_fig = True)
             pass
         else:
             os.makedirs(save_path)
-        plt.savefig(os.path.join(save_path, f'{network}_trained_with_{train_data}_tested_with_{test_data}.png'))
+        plt.savefig(os.path.join(save_path, f'{network}_trained_with_{train_data}_tested_with_{test_data}.pdf'))
 
     plt.show()
