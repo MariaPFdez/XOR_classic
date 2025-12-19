@@ -5,7 +5,7 @@ This repository contains code to train neural networks for input reconstruction 
 ### Overview
 
 The goal of this project is to obtain accurate reconstructions of input data using biologically inspired learning mechanisms.
-To this end, we employ a signed XOR-based loss function—a biologically plausible basic motif introduced in [reference: XXXXXXX], and demonstrate that it performs effectively for the specified reconstruction tasks.
+To this end, we employ a signed XOR-based loss function, a biologically plausible basic motif introduced in [1], and demonstrate that it performs effectively for the specified reconstruction tasks.
 
 ### Features
 
@@ -64,3 +64,10 @@ plot_classifications(test_data='MNIST', train_data='MNIST', network='Fully', sav
 #### License
 
 This project is released under the Apache 2.0 License.
+
+
+#### References
+<a id="1">[1]</a> 
+Peña M., Marco J., and Lloret L. (2024). 
+Implementing engrams from a machine learning perspective: XOR as a basic motif
+doi:10.48550/arXiv:2406.09940
