@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+
+title: "Training Neural Networks with a classic XOR-Based Loss Function"
+
+authors:
+  - family-names: "Peña Fernández"
+    given-names: "María"
+    orcid: "https://orcid.org/0009-0001-6456-9832"
+
+  - family-names: "Lloret Iglesias"
+    given-names: "Lara"
+    orcid: "https://orcid.org/0000-0002-0157-4765"
+
+  - family-names: "Marco de Lucas"
+    given-names: "Jesús"
+    orcid: "https://orcid.org/0000-0001-7914-8494"
+
+version: "1.0.0"
+date-released: 2026-10-09
+
+repository-code: "https://github.com/MariaPFdez/XOR_classic"
+
+license: "Apache-2.0"
