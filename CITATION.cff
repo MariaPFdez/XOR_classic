@@ -17,6 +17,7 @@ authors:
     orcid: "https://orcid.org/0000-0001-7914-8494"
 
 version: "1.0.0"
+doi: "10.5281/zenodo.23262316" 
 date-released: 2026-10-09
 
 repository-code: "https://github.com/MariaPFdez/XOR_classic"
