@@ -71,3 +71,9 @@ This project is released under the Apache 2.0 License.
 Peña M., Marco J., and Lloret L. (2024). 
 Implementing engrams from a machine learning perspective: XOR as a basic motif
 doi:10.48550/arXiv:2406.09940
+
+
+#### Citation
+If you use this software in your research, please cite:
+Peña M., Lloret L. and Marco J. *Training Neural Networks with an XOR-Based Loss Function*. Version 1.0.0. Zenodo. https://doi.org/10.5281/zenodo.23262316
+
