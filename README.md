@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23262316.svg)](https://doi.org/10.5281/zenodo.23262316)
+
 # XOR_classic
 
 This repository contains code to train neural networks for input reconstruction tasks. The project supports both fully connected and convolutional autoencoders, which can be trained on multiple datasets: MNIST, EMNIST, and a synthetic Random dataset.
