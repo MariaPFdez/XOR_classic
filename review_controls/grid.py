@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Experiment grid for the Neurocomputing revision.  Resumable and shardable:
+Experiment grid for the control experiments.  Resumable and shardable:
 each (config, seed) writes results/<config>/seed<k>.json; finished runs are
-skipped.  Shard k of n takes every n-th job, so three DGX nodes sharing the
-same NFS directory can run disjoint parts of the grid.
+skipped.  Shard k of n takes every n-th job, so several processes (on one
+machine, or on several nodes sharing the results directory) run disjoint
+parts of the grid.  All shards must be launched with the same --seeds/--only.
 
   python grid.py --list
   python grid.py --shard 0 --nshards 3            # on node 0, etc.
@@ -25,43 +26,43 @@ import xorlab
 from xorlab import Config
 
 # ----------------------------------------------------------------------------
-# grid: name -> (Config overrides, run options).  Each entry answers a
-# specific referee comment (see README.md).
+# grid: name -> (Config overrides, run options).  Each block tests one
+# question; README.md maps the configurations to the manuscript.
 # ----------------------------------------------------------------------------
 FC = dict(arch="fc")
 CNN = dict(arch="cnn")
 
 EXPS = {
-    # A. reference reproduction (comment 2: variance over seeds; 8: fixed LPIPS)
+    # A. reference models (variance over seeds; LPIPS over all test images)
     "A_fc_ref":          (dict(**FC, lpips=True, save_weights=True), dict(raw_baseline=True)),
     "A_cnn_ref":         (dict(**CNN, lpips=True, save_weights=True), {}),
-    # B. what the "iterative corrections" really are (comment 1)
+    # B. repeated plasticity steps per mini-batch: 1 vs 3, and 1 with matched #updates
     "B_fc_corr1":        (dict(**FC, max_corrections=1), {}),
     "B_fc_corr1_ep15":   (dict(**FC, max_corrections=1, epochs=15), {}),   # matched #updates
     "B_cnn_corr1":       (dict(**CNN, max_corrections=1), {}),
     "B_cnn_corr1_ep15":  (dict(**CNN, max_corrections=1, epochs=15), {}),
-    # C. decoder-only learning with a fixed random encoder (comment 5a)
+    # C. decoder-only learning with a fixed random encoder
     "C_fc_frozen_enc":   (dict(**FC, freeze_encoder=True), {}),
     "C_cnn_frozen_enc":  (dict(**CNN, freeze_encoder=True), {}),
-    # D. bottleneck sweep (comment 4); H=1024 is A_fc_ref
+    # D. bottleneck sweep, trained vs fixed encoder; H=1024 is A_fc_ref / C_fc_frozen_enc
     **{f"D_fc_h{h:04d}": (dict(**FC, hidden=h), {}) for h in (64, 128, 256, 512, 2048)},
     **{f"D_fc_frozen_h{h:04d}": (dict(**FC, hidden=h, freeze_encoder=True), {}) for h in (64, 128, 256, 512, 2048)},
-    # E. train on matched-density random images (comment 4: identity vs structure)
+    # E. train on matched-density random images (generic inverse vs learned structure)
     "E_fc_randomtrain":       (dict(**FC, train_data="Random"), {}),
     "E_fc_randomtrain_h0256": (dict(**FC, train_data="Random", hidden=256), {}),
     "E_cnn_randomtrain":      (dict(**CNN, train_data="Random"), {}),
-    # F. CNN without the max-unpool index side channel (comment 6)
+    # F. CNN without the max-unpool index side channel
     "F_cnn_nearest":          (dict(**CNN, upsample="nearest"), {}),
     "F_cnn_nearest_frozen":   (dict(**CNN, upsample="nearest", freeze_encoder=True), {}),
-    # G. unsigned XOR control (comment 5d; v1 text)
+    # G. unsigned error |x-y| (no direction: collapses to all-ones by construction)
     "G_fc_unsigned":     (dict(**FC, error="unsigned"), {}),
     "G_cnn_unsigned":    (dict(**CNN, error="unsigned"), {}),
-    # H. graded (non-sign) random feedback to the encoder (comment 3)
+    # H. graded (non-sign) random feedback to the encoder
     "H_fc_raw_feedback": (dict(**FC, enc_feedback="raw"), {}),
-    # I. bias learning off (comment 9: summed weights vs averaged biases)
+    # I. bias learning off (weights summed vs biases averaged)
     "I_fc_no_bias":      (dict(**FC, bias_mode="none"), {}),
     "I_cnn_no_bias":     (dict(**CNN, bias_mode="none"), {}),
-    # J. backprop-through-STE upper bound, same architectures (comment 5c)
+    # J. backprop through a straight-through estimator, same architectures (Adam, lr 1e-3)
     "J_fc_ste":          (dict(**FC, rule="ste"), {}),
     "J_cnn_ste":         (dict(**CNN, rule="ste"), {}),
     "J_cnn_ste_nearest": (dict(**CNN, rule="ste", upsample="nearest"), {}),
@@ -72,6 +73,14 @@ EXPS = {
     "K_cnn_nearest_negb_frozen":  (dict(**CNN, upsample="nearest", enc_bias_init=-1e-3, freeze_encoder=True), {}),
     "K_cnn_nearest_negb_trained": (dict(**CNN, upsample="nearest", enc_bias_init=-1e-3), {}),
     "K_cnn_nearest_bias_only":    (dict(**CNN, upsample="nearest", freeze_W=True), {}),
+    # --- added after the first 37-configuration grid (appended, so existing results stay valid) ---
+    # H2. graded feedback rescaled to the mean |.| of sign(e·B): same average step size as sign
+    "H_fc_raw_feedback_norm": (dict(**FC, enc_feedback="raw_norm"), {}),
+    # J2. STE learning-rate sweep (lr chosen on final training loss, never on test; 1e-3 is J_*_ste)
+    **{f"J_{a}_ste_lr{lr}": (dict(arch=a, rule="ste", ste_lr=float(lr)), {})
+       for a in ("fc", "cnn") for lr in ("1e-4", "3e-4", "3e-3", "1e-2")},
+    # J3. the CNN optimum was at the top of the sweep (1e-2): extend it
+    **{f"J_cnn_ste_lr{lr}": (dict(arch="cnn", rule="ste", ste_lr=float(lr)), {}) for lr in ("3e-2", "1e-1", "3e-1")},
 }
 
 
@@ -115,7 +124,7 @@ def main():
         return
 
     host = socket.gethostname()
-    dev = "cuda:" + torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+    dev = f"cuda ({torch.cuda.get_device_name(0)})" if torch.cuda.is_available() else "cpu"
     print(f"[{host}] shard {args.shard}/{args.nshards}: {len(mine)} jobs on {dev}", flush=True)
 
     for k, (name, seed, over, opts) in enumerate(mine):

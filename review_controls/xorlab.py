@@ -1,16 +1,21 @@
 """
-xorlab.py — controlled re-implementation of the XOR_classic training rules
-(github.com/MariaPFdez/XOR_classic) with the switches needed for the
-referee-driven ablations.
+xorlab.py — controlled re-implementation of the training rules in XORclassic/
+(this repository, github.com/MariaPFdez/XOR_classic) with the switches needed
+for the control experiments.
 
-Default settings reproduce the repository exactly:
+Default settings are bit-identical to XORclassic/ (checked by
+test_equivalence.py; the CNN per-sample loops are vectorised with einsum, but
+the summed terms are integer-valued, so the sums are exact):
   * binarisation x > 0.5, Theta(u) = 1 if u >= 0
-  * W, V ~ N(0, 0.01^2), biases 0, B ~ N(0, 1/D)   (FC)
+  * W, V ~ N(0, 0.01^2), biases 0, B ~ N(0, 1/D)   (FC); same RNG call order
+    (W, V, B), so a given seed gives the same initialisation as the repo
   * eta_dec=0.05, eta_enc=0.02, eta_b_dec=0.02, eta_b_enc=0.01
-  * weight updates summed over the batch, bias updates averaged
+  * weight updates summed over the batch; bias updates averaged over the
+    batch (FC) or over batch and spatial positions (CNN)
   * up to max_corrections=3 weight updates on the same mini-batch
   * CNN: 28 3x3 filters, 4x4 max-pool, max-unpool with encoder indices,
-    single 3x3 decoder filter
+    single 3x3 decoder filter; the encoder feedback sign(conv(e, B)) is
+    applied at every pre-pooling position (not gated by the pooling winners)
   * readout: multi-class perceptron, eta 0.05 / 0.02, 5 epochs, argmax
 Differences from the repo are only additions (seeds, logging, options).
 """
@@ -35,7 +40,8 @@ class Config:
     arch: str = "fc"                 # fc | cnn
     rule: str = "xor"                # xor | ste  (ste = backprop-through-STE baseline)
     error: str = "signed"            # signed | unsigned            (xor rule only)
-    enc_feedback: str = "sign"       # sign | raw                   (xor rule only)
+    enc_feedback: str = "sign"       # sign | raw | raw_norm        (xor rule only)
+                                     # raw_norm: e·B rescaled so mean|.| = 1, the step size of sign
     freeze_encoder: bool = False     # decoder-only learning (random fixed encoder)
     freeze_W: bool = False           # learn encoder biases only (W fixed)
     enc_bias_init: float = 0.0       # initial encoder bias (0 = repo)
@@ -192,8 +198,7 @@ class FCModel:
         self.V += c.eta_dec * (h.t() @ delta)
         _bias(self, "bV", c.eta_b_dec, delta, (0,), c.bias_mode)
         if not c.freeze_encoder:
-            proj = enc_err @ self.B
-            enc = torch.sign(proj) if c.enc_feedback == "sign" else proj
+            enc = _feedback(enc_err @ self.B, c.enc_feedback)
             if not c.freeze_W:
                 self.W += c.eta_enc * (x.t() @ enc)
             _bias(self, "bW", c.eta_b_enc, enc, (0,), c.bias_mode)
@@ -250,8 +255,8 @@ class CNNModel:
         self.V += c.eta_dec * dV
         _bias(self, "bV", c.eta_b_dec, delta, (0, 2, 3), c.bias_mode, keepdim=True)
         if not c.freeze_encoder:
-            proj = F.conv2d(enc_err, self.B, padding=p)                # N, C, 28, 28
-            enc = torch.sign(proj) if c.enc_feedback == "sign" else proj
+            # feedback at every pre-pooling position, as in the repo
+            enc = _feedback(F.conv2d(enc_err, self.B, padding=p), c.enc_feedback)   # N, C, 28, 28
             inp_unf = F.unfold(x, kernel_size=k, padding=p)            # N, k*k, L
             dW = torch.einsum("bcl,bkl->ck", enc.flatten(2), inp_unf).view_as(self.W)
             if not c.freeze_W:
@@ -262,6 +267,20 @@ class CNNModel:
         return {k: getattr(self, k).cpu() for k in ("W", "bW", "V", "bV", "B")}
 
 
+def _feedback(proj, mode):
+    """Encoder teaching signal from the random projection e·B.
+    sign (repo): ±1 per unit.  raw: graded e·B (much smaller steps, since
+    |e·B| << 1 with B ~ N(0, 1/D)).  raw_norm: graded, rescaled per update so
+    that mean|.| = 1, i.e. the same average step size as sign."""
+    if mode == "sign":
+        return torch.sign(proj)
+    if mode == "raw":
+        return proj
+    if mode == "raw_norm":
+        return proj / proj.abs().mean().clamp_min(1e-12)
+    raise ValueError(mode)
+
+
 def _bias(m, name, eta, err, dims, mode, keepdim=False):
     if mode == "none":
         return
@@ -270,7 +289,10 @@ def _bias(m, name, eta, err, dims, mode, keepdim=False):
 
 
 def xor_error(x, y, mode):
-    """Signed XOR exactly as in the repo (m_up - m_dn); unsigned = |x-y| (v1 text)."""
+    """signed: XOR with sign exactly as in the repo (m_up - m_dn = x - y).
+    unsigned: |x - y|, a magnitude-only control. It carries no direction, so
+    the update can only push outputs up and must collapse to all-ones; it
+    shows that the sign is logically required."""
     e = (x != y)
     xb = x.bool()
     if mode == "signed":
@@ -302,6 +324,7 @@ def train_ste(model, cfg, Xtr, dev, gen, log):
     opt = torch.optim.Adam(params, lr=cfg.ste_lr)
     n_upd = 0
     for ep in range(cfg.epochs):
+        loss_sum, nb = 0.0, 0
         for bi in batches(Xtr.shape[0], cfg.batch_size, gen):
             x = model.prep(Xtr[bi].to(dev))
             if cfg.arch == "fc":
@@ -317,7 +340,10 @@ def train_ste(model, cfg, Xtr, dev, gen, log):
             loss.backward()
             opt.step()
             n_upd += 1
-        log.append({"epoch": ep + 1, "loss": loss.item()})
+            loss_sum += loss.item(); nb += 1
+        # loss: last batch (kept for compatibility); loss_epoch_mean: used to
+        # pick the STE learning rate on training data only (paper_numbers.py)
+        log.append({"epoch": ep + 1, "loss": loss.item(), "loss_epoch_mean": loss_sum / nb})
     for p in params:
         p.requires_grad_(False)
     return n_upd
@@ -414,7 +440,7 @@ def feats(fn, X, prep, dev, bs=2000):
 
 
 @torch.no_grad()
-def perceptron_readout(Ftr, ytr, Fte, yte, K, cfg, gen, dev):
+def perceptron_readout(Ftr, ytr, Fte, yte, K, cfg, gen, dev, return_weights=False):
     """Mirror of training_*_classif: multi-class perceptron on argmax."""
     C = torch.zeros(Ftr.shape[1], K, device=dev)
     bC = torch.zeros(K, device=dev)
@@ -430,6 +456,8 @@ def perceptron_readout(Ftr, ytr, Fte, yte, K, cfg, gen, dev):
     acc = (pred == yte).float().mean().item()
     per_class = [((pred == yte) & (yte == k)).sum().item() / max(1, (yte == k).sum().item())
                  for k in range(K)]
+    if return_weights:                      # used by test_equivalence.py
+        return acc, per_class, C, bC
     return acc, per_class
 
 

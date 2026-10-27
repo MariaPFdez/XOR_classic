@@ -1,0 +1,15 @@
+XORclassic from /home/marcoj/projects/XOR_classic  device cuda  torch 2.12.0+cu130
+
+[ok  ] data: MNIST binarisation/orientation (512 images)  — identical
+[ok  ] data: EMNIST binarisation/orientation (512 images)  — identical
+[ok  ] FC training, 2 epochs x 2048 images  — identical
+[ok  ] FC perceptron readout, 2 epochs  — identical
+[ok  ] CNN initialisation from the same seed  — identical
+[ok  ] CNN forward (at initialisation)  — identical
+[ok  ] CNN single update (at initialisation)  — bit-identical
+[ok  ] CNN forward (after repository training)  — identical
+[ok  ] CNN single update (after repository training)  — bit-identical
+[ok  ] CNN perceptron readout, 2 epochs  — identical
+[ok  ] CNN training, 2 epochs x 2048 images (reported)  — test reconstructions agree on 100.000% of pixels; max rel. |ΔW| 0, |ΔV| 0
+
+PASS

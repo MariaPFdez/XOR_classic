@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Aggregate results/<config>/seed*.json into
-  results/summary.md   human-readable tables (mean ± s.d. over seeds)
+  results/summary.md   human-readable tables (mean ± s.d. over seeds), paired
+                       seed-by-seed differences, ridge-λ check, environment
   results/summary.csv  long format, one row per (config, metric)
   results/tables.tex   booktabs tables ready to paste
   results/figs/*.pdf   learning curves, bottleneck sweep, per-class spread
@@ -68,6 +69,36 @@ RECON_COLS = [("bit acc. (%)", "bit_acc", 100, 2), ("bal. acc. (%)", "balanced_a
               ("Hamming/img", "hamming_per_image", 1, 1)]
 
 
+# Pairs that share initialisation and batch order for a given seed (same
+# architecture, shapes and training data), so differences can be taken per seed.
+PAIRS = [("C_fc_frozen_enc", "A_fc_ref"), ("G_fc_unsigned", "A_fc_ref"),
+         ("H_fc_raw_feedback", "A_fc_ref"), ("H_fc_raw_feedback_norm", "A_fc_ref"),
+         ("I_fc_no_bias", "A_fc_ref"), ("B_fc_corr1_ep15", "A_fc_ref"),
+         ("C_cnn_frozen_enc", "A_cnn_ref"), ("K_cnn_negb_frozen", "A_cnn_ref"),
+         ("K_cnn_negb_trained", "K_cnn_negb_frozen"), ("F_cnn_nearest", "A_cnn_ref"),
+         ("F_cnn_nearest_frozen", "F_cnn_nearest"),
+         ("K_cnn_nearest_negb_trained", "K_cnn_nearest_negb_frozen"),
+         ("B_cnn_corr1_ep15", "A_cnn_ref")] + \
+        [(f"D_fc_frozen_h{h:04d}", f"D_fc_h{h:04d}") for h in (64, 128, 256, 512, 2048)]
+PAIR_METRICS = [("MNIST bal. acc. (%)", "recon_after/MNIST/balanced_acc", 100),
+                ("EMNIST bal. acc. (%)", "recon_after/EMNIST/balanced_acc", 100),
+                ("Random bal. acc. (%)", "recon_after/Random/balanced_acc", 100),
+                ("MNIST perceptron (%)", "readout/MNIST_trained/perceptron_acc", 100),
+                ("MNIST ridge (%)", "readout/MNIST_trained/ridge_acc", 100),
+                ("EMNIST ridge (%)", "readout/EMNIST_trained/ridge_acc", 100)]
+
+
+def paired(Ra, Rb, path, scale=1.0):
+    """Per-seed difference a - b over the seeds present in both."""
+    va = {r["config"]["seed"]: get(r, path) for r in Ra}
+    vb = {r["config"]["seed"]: get(r, path) for r in Rb}
+    seeds = sorted(s for s in va if s in vb and va[s] is not None and vb[s] is not None)
+    if not seeds:
+        return None
+    d = np.array([va[s] - vb[s] for s in seeds], dtype=float) * scale
+    return d.mean(), (d.std(ddof=1) if d.size > 1 else 0.0), int((d > 0).sum()), d.size
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="./results")
@@ -87,7 +118,8 @@ def main():
                  f"recon_after/{ds}/lpips_repo_style", f"recon_before/{ds}/bit_acc"]
     for ds in ("MNIST", "EMNIST"):
         for tag in ("trained", "init_encoder", "raw_pixels"):
-            scal += [f"readout/{ds}_{tag}/perceptron_acc", f"readout/{ds}_{tag}/ridge_acc"]
+            scal += [f"readout/{ds}_{tag}/perceptron_acc", f"readout/{ds}_{tag}/ridge_acc",
+                     f"readout/{ds}_{tag}/ridge_lambda"]
     scal += ["weight_updates", "n_params", "wall_sec"]
     for n in names:
         for p in scal:
@@ -98,6 +130,14 @@ def main():
     md.append("# XOR revision experiments — summary\n")
     md.append("Mean ± s.d. over seeds (n given). All reconstruction metrics on test sets, "
               "single forward pass (as in `model_accuracy`).\n")
+
+    # ---------- environment ----------
+    env = defaultdict(int)
+    for n in names:
+        for r in R[n]:
+            env[(r.get("torch", "?"), r.get("device", "?"), r.get("host", "?"))] += 1
+    md.append("\n## Environment\n\n" + md_table(["torch", "device", "host", "runs"],
+                                                 [list(k) + [v] for k, v in sorted(env.items())]))
 
     # ---------- T1 reconstruction ----------
     for ds in ("MNIST", "EMNIST", "Random"):
@@ -140,14 +180,16 @@ def main():
     hdr = ["config", "MNIST perc.", "MNIST ridge", "MNIST perc. (init enc)", "MNIST ridge (init enc)",
            "EMNIST perc.", "EMNIST ridge", "EMNIST perc. (init enc)", "EMNIST ridge (init enc)"]
     if raw:
-        rows.append(["**raw pixels (784)**",
+        rows.append(["raw pixels (784)",
                      fmt(ms(raw, "readout/MNIST_raw_pixels/perceptron_acc", 100)),
                      fmt(ms(raw, "readout/MNIST_raw_pixels/ridge_acc", 100)), "", "",
                      fmt(ms(raw, "readout/EMNIST_raw_pixels/perceptron_acc", 100)),
                      fmt(ms(raw, "readout/EMNIST_raw_pixels/ridge_acc", 100)), "", ""])
     md.append("\n## Linear readout accuracy (%) — perceptron rule (as paper) and ridge (best linear, "
               "λ on train split)\n\n'init enc' = same run's encoder before training "
-              "(random-feature baseline).\n\n" + md_table(hdr, rows))
+              "(random-feature baseline).\n\n"
+              + md_table(hdr, [["**" + r[0] + "**"] + r[1:] if r[0] == "raw pixels (784)" else r
+                               for r in rows]))
     tex.append(tex_table("Linear readout accuracy (\\%) of latent codes; init = untrained encoder.",
                          ["Model", "MNIST", "MNIST (init)", "EMNIST", "EMNIST (init)"],
                          [[r[0], r[1], r[3], r[5], r[7]] for r in rows]))
@@ -180,6 +222,35 @@ def main():
                   "printed 'Accuracy', measured after up to max_corrections updates on that same batch.\n\n"
                   + md_table(["config", "weight updates", "last-epoch train (pre) %",
                               "last-epoch train (post) %", "MNIST test bit %"], rows))
+
+    # ---------- ridge lambda: is the chosen value on the edge of the grid? ----------
+    LAM_EDGE = (1e-2, 1e3)
+    rows = []
+    for n in names:
+        for key in sorted({k for r in R[n] for k in (r.get("readout") or {})}):
+            lams = [get(r, f"readout/{key}/ridge_lambda") for r in R[n]]
+            lams = [l for l in lams if l is not None]
+            if lams:
+                edge = sum(l in LAM_EDGE for l in lams)
+                rows.append([n, key, " ".join(f"{l:g}" for l in lams),
+                             f"**{edge}/{len(lams)}**" if edge else "0"])
+    if rows:
+        md.append("\n## Ridge λ chosen per seed (grid 1e-2 … 1e3; 'edge' = runs at the boundary)\n\n"
+                  + md_table(["config", "readout", "λ per seed", "edge"], rows))
+
+    # ---------- paired, seed-by-seed differences ----------
+    rows = []
+    for a, b in PAIRS:
+        if a not in R or b not in R:
+            continue
+        for label, path, scale in PAIR_METRICS:
+            d = paired(R[a], R[b], path, scale)
+            if d is not None:
+                rows.append([a, b, label, f"{d[0]:+.2f} ± {d[1]:.2f}", f"{d[2]}/{d[3]}"])
+    if rows:
+        md.append("\n## Paired differences (A − B), matched by seed\n\n"
+                  "Mean ± s.d. of the per-seed difference; 'A > B' counts seeds where A is higher.\n\n"
+                  + md_table(["A", "B", "metric", "A − B", "A > B"], rows))
 
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "summary.md"), "w") as f:
@@ -214,47 +285,54 @@ def figures(R, figdir):
         for j, key in enumerate(("train_acc_pre_update", "test_bit_acc")):
             v = np.array([[l[e][key] for e in range(L)] for l in logs]) * 100
             ax[j].plot(x, v.mean(0), marker="o", ms=3, label=n)
-            ax[j].fill_between(x, v.mean(0) - v.std(0), v.mean(0) + v.std(0), alpha=.2)
+            sd = v.std(0, ddof=1) if v.shape[0] > 1 else np.zeros(L)
+            ax[j].fill_between(x, v.mean(0) - sd, v.mean(0) + sd, alpha=.2)
     ax[0].set_title("train bit acc. (online, pre-update)"); ax[1].set_title("MNIST test bit acc.")
     for a in ax:
         a.set_xlabel("epoch"); a.set_ylabel("%"); a.grid(alpha=.3)
     ax[1].legend(fontsize=6, ncol=2)
     fig.tight_layout(); fig.savefig(os.path.join(figdir, "learning_curves.pdf")); plt.close(fig)
 
-    # bottleneck sweep
-    pts = []
-    for n in R:
-        if n.startswith("D_fc_h") or n == "A_fc_ref":
-            h = R[n][0]["config"]["hidden"]
-            pts.append((h, n))
-    if pts:
-        pts.sort()
-        H = [p[0] for p in pts]
+    # bottleneck sweep: trained encoder (A_fc_ref, D_fc_h*) vs fixed random encoder
+    # (C_fc_frozen_enc, D_fc_frozen_h*); H = 1024 is the reference width
+    def sweep(prefix, ref):
+        pts = [(R[n][0]["config"]["hidden"], n) for n in R if n.startswith(prefix) or n == ref]
+        return sorted(pts)
+
+    def series(ax, pts, path, **kw):
+        m = [(h, ms(R[n], path, 100)) for h, n in pts]
+        m = [(h, t) for h, t in m if t is not None]
+        if m:
+            ax.errorbar([h for h, _ in m], [t[0] for _, t in m], [t[1] for _, t in m], capsize=3, **kw)
+
+    trained, frozen = sweep("D_fc_h", "A_fc_ref"), sweep("D_fc_frozen_h", "C_fc_frozen_enc")
+    if trained or frozen:
         fig, ax = plt.subplots(1, 2, figsize=(10, 3.6))
-        for ds, mk in (("MNIST", "o"), ("EMNIST", "s"), ("Random", "^")):
-            m = [ms(R[n], f"recon_after/{ds}/balanced_acc", 100) for _, n in pts]
-            ax[0].errorbar(H, [t[0] for t in m], [t[1] for t in m], marker=mk, label=ds, capsize=3)
-        for tag, mk in (("trained", "o"), ("init_encoder", "x")):
-            m = [ms(R[n], f"readout/MNIST_{tag}/perceptron_acc", 100) for _, n in pts]
-            if all(m):
-                ax[1].errorbar(H, [t[0] for t in m], [t[1] for t in m], marker=mk, label=tag, capsize=3)
+        for ci, (ds, mk) in enumerate((("MNIST", "o"), ("EMNIST", "s"), ("Random", "^"))):
+            col = f"C{ci}"
+            series(ax[0], trained, f"recon_after/{ds}/balanced_acc", marker=mk, c=col, label=f"{ds} trained")
+            series(ax[0], frozen, f"recon_after/{ds}/balanced_acc", marker=mk, c=col, ls="--", mfc="none",
+                   label=f"{ds} fixed")
+        series(ax[1], trained, "readout/MNIST_trained/perceptron_acc", marker="o", c="C0", label="trained encoder")
+        series(ax[1], frozen, "readout/MNIST_trained/perceptron_acc", marker="o", c="C2", ls="--", mfc="none",
+               label="fixed encoder")
         raw = [r for n in R for r in R[n] if get(r, "readout/MNIST_raw_pixels")]
         if raw:
             t = ms(raw, "readout/MNIST_raw_pixels/perceptron_acc", 100)
-            ax[1].axhline(t[0], ls="--", c="k", lw=1, label="raw pixels")
+            ax[1].axhline(t[0], ls=":", c="k", lw=1, label="raw pixels")
         for a in ax:
-            a.set_xscale("log", base=2); a.set_xlabel("hidden units"); a.grid(alpha=.3); a.legend(fontsize=8)
+            a.set_xscale("log", base=2); a.set_xlabel("hidden units"); a.grid(alpha=.3); a.legend(fontsize=7)
             a.axvline(784, c="grey", lw=.8, ls=":")
-        ax[0].set_ylabel("balanced recon. acc. (%)"); ax[1].set_ylabel("MNIST readout acc. (%)")
+        ax[0].set_ylabel("balanced recon. acc. (%)"); ax[1].set_ylabel("MNIST perceptron readout (%)")
         fig.tight_layout(); fig.savefig(os.path.join(figdir, "bottleneck_sweep.pdf")); plt.close(fig)
 
     # per-class spread across seeds
     for n in ("A_fc_ref", "A_cnn_ref"):
-        P = [get(r, "readout/MNIST_trained/per_class") for r in R.get(n, [])]
-        P = np.array([p for p in P if p]) * 100
-        if P.size:
+        P = [(r["config"]["seed"], get(r, "readout/MNIST_trained/per_class")) for r in R.get(n, [])]
+        P = sorted((s, np.array(p) * 100) for s, p in P if p)
+        if P:
             fig, ax = plt.subplots(figsize=(6, 3.4))
-            for s, p in enumerate(P):
+            for s, p in P:
                 ax.plot(range(10), p, marker="o", ms=3, alpha=.7, label=f"seed {s}")
             ax.set_xticks(range(10)); ax.set_xlabel("digit"); ax.set_ylabel("readout acc. (%)")
             ax.set_title(f"{n}: per-class readout across seeds"); ax.grid(alpha=.3); ax.legend(fontsize=7)

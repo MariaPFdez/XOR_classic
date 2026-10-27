@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check the Python/GPU environment, then download MNIST, EMNIST (balanced) and
-the LPIPS/VGG weights once into the shared directories, so that the three
-shards never download concurrently over NFS.
+the LPIPS/VGG weights once into the shared directories, so that parallel
+shards never download concurrently.
 
     XORLAB_DATA=/nfs/xor/data TORCH_HOME=/nfs/xor/torch_home python check_env.py
 """
